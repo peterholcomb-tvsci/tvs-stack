@@ -1,0 +1,142 @@
+####
+# tvs-stack: boot tvs-be + tvs-fe together against shared MySQL/Redis.
+#
+# Driven by tvs-stack/.env (see .env.example). The two paths you must set:
+#   TVS_BE_PATH=/absolute/path/to/tvs-be (worktree)
+#   TVS_FE_PATH=/absolute/path/to/tvs-fe (worktree)
+#
+# Each worktree's own .env file is the source of truth for app config
+# (Beeswax creds, Okta, etc.) — this file just wires services together.
+#
+# Usage:
+#   ./start.sh                                 # uses defaults / .env in this dir
+#   ./start.sh -b /path/to/tvs-be -f /path/to/tvs-fe
+#   docker compose --profile celery up         # also bring up celery + flower
+####
+
+services:
+  backend:
+    build:
+      context: ${TVS_BE_PATH}
+    image: tvs-stack-backend:local
+    env_file:
+      - ${TVS_BE_PATH}/.env
+    environment:
+      TVSDBHOSTNAME: database
+      TVSDBPORT: 3306
+      REDIS_URL: redis://redis:6379
+    command: ./start-local-server.sh
+    depends_on:
+      redis:
+        condition: service_started
+      database:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8020}:8010"
+    networks:
+      - tvs
+    volumes:
+      - ${TVS_BE_PATH}:/opt/app
+
+  frontend:
+    image: node:22-alpine3.21
+    working_dir: /app
+    env_file:
+      - ${TVS_FE_PATH}/.env
+    environment:
+      # Inside the FE container, BE is reachable at http://backend:8010.
+      # From your browser it's http://localhost:${BACKEND_PORT:-8020}.
+      # The FE bundle runs in the browser, so API_URL must be the host URL.
+      API_URL: ${API_URL:-http://localhost:${BACKEND_PORT:-8020}}
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    command: sh -c "apk add --no-cache --update npm git && npm install && npm run start:short"
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_UI_PORT:-3001}:3001"
+    networks:
+      - tvs
+    volumes:
+      - ${TVS_FE_PATH}:/app
+      - fe-node-modules:/app/node_modules
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - tvs
+
+  database:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: "tvsroot"
+      MYSQL_DATABASE: "tvs"
+      MYSQL_USER: "tvsuser"
+      MYSQL_PASSWORD: "tvs1234"
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    networks:
+      - tvs
+    volumes:
+      - ${TVS_BE_PATH}/local_db_init:/docker-entrypoint-initdb.d
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # Optional async workers — enable with: docker compose --profile celery up
+  celery:
+    profiles: ["celery"]
+    image: tvs-stack-backend:local
+    build:
+      context: ${TVS_BE_PATH}
+    env_file:
+      - ${TVS_BE_PATH}/.env
+    environment:
+      TVSDBHOSTNAME: database
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    working_dir: /opt/app/src
+    command: ["celery", "-A", "tvs", "worker", "--loglevel=info", "-Q", "celery,campaign_management,audience_targeting,beeswax_sync"]
+    networks:
+      - tvs
+    volumes:
+      - ${TVS_BE_PATH}:/opt/app
+
+  flower:
+    profiles: ["celery"]
+    image: tvs-stack-backend:local
+    build:
+      context: ${TVS_BE_PATH}
+    env_file:
+      - ${TVS_BE_PATH}/.env
+    environment:
+      TVSDBHOSTNAME: database
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_started
+    working_dir: /opt/app/src
+    command: ["celery", "-A", "tvs", "flower", "--conf=tvs/flowerconf.py"]
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    networks:
+      - tvs
+
+networks:
+  tvs:
+
+volumes:
+  db-data:
+  fe-node-modules:
