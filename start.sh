@@ -34,7 +34,8 @@ Usage: ./start.sh [options] [-- extra docker compose args]
 
 Env you can also set in .env (next to this script):
   TVS_BE_PATH, TVS_FE_PATH, BACKEND_PORT, FRONTEND_PORT, API_URL,
-  MYSQL_PORT, REDIS_PORT, FLOWER_PORT, SEED_OKTA_ID.
+  MYSQL_PORT, REDIS_PORT, FLOWER_PORT, MINIO_PORT, MINIO_CONSOLE_PORT,
+  SEED_OKTA_ID.
 
 Examples:
   ./start.sh -b ~/Projects/tvs-be-pr-4737 -f ~/Projects/tvs-fe
@@ -114,6 +115,29 @@ export TVS_BE_PATH TVS_FE_PATH
 
 echo "tvs-stack: BE=$TVS_BE_PATH  FE=$TVS_FE_PATH"
 [[ -n "${API_URL:-}" ]] && echo "tvs-stack: API_URL override = $API_URL"
+
+# Apply a local minio-specific patch to the FE worktree if a `git stash`
+# entry with "minio" in its message exists. Idempotent: skips if already
+# applied, warns (but doesn't fail) if the patch won't apply cleanly.
+apply_minio_stash() {
+  local stash_ref patch
+  stash_ref="$(git -C "$TVS_FE_PATH" stash list 2>/dev/null | grep -i minio | head -1 | cut -d: -f1)"
+  if [[ -z "$stash_ref" ]]; then
+    return 0
+  fi
+  patch="$(git -C "$TVS_FE_PATH" stash show -p "$stash_ref" 2>/dev/null)" || return 0
+  if printf '%s\n' "$patch" | git -C "$TVS_FE_PATH" apply --reverse --check 2>/dev/null; then
+    echo "tvs-stack: minio patch already applied to FE worktree (from $stash_ref)"
+    return 0
+  fi
+  if printf '%s\n' "$patch" | git -C "$TVS_FE_PATH" apply --check 2>/dev/null; then
+    printf '%s\n' "$patch" | git -C "$TVS_FE_PATH" apply
+    echo "tvs-stack: applied minio patch to FE worktree (from $stash_ref)"
+    return 0
+  fi
+  echo "tvs-stack: WARNING — minio stash $stash_ref doesn't apply cleanly to FE worktree; continuing without it" >&2
+}
+apply_minio_stash
 
 COMPOSE=(docker compose ${PROFILES[@]+"${PROFILES[@]}"})
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"

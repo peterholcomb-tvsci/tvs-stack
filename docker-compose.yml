@@ -14,6 +14,23 @@
 #   docker compose --profile celery up         # also bring up celery + flower
 ####
 
+# Local S3 (MinIO) wiring for creative/asset uploads. boto3 picks up
+# AWS_ENDPOINT_URL_S3 natively (botocore >= 1.29) — no BE code changes.
+# The endpoint host `minio.localhost` resolves BOTH in-network (compose
+# alias on the minio service) and in your browser (browsers resolve
+# *.localhost to 127.0.0.1 -> the published port), so presigned URLs
+# carry the same host:port everywhere and the SigV4 signature stays valid.
+# To use real AWS instead, delete this block from the backend/celery env
+# and put AWS_* creds + bucket names in tvs-be/.env.
+x-local-s3-env: &local-s3-env
+  AWS_ENDPOINT_URL_S3: http://minio.localhost:${MINIO_PORT:-9000}
+  AWS_ACCESS_KEY_ID: tvslocal
+  AWS_SECRET_ACCESS_KEY: tvslocal123
+  AWS_DEFAULT_REGION: us-west-2
+  AWS_S3_ASSETS_BUCKET_NAME: tvs-local-assets
+  AWS_S3_ICON_BUCKET_NAME: tvs-local-icons
+  AWS_S3_VAST_INPUT_BUCKET: tvs-local-vast-input
+
 services:
   backend:
     build:
@@ -22,21 +39,34 @@ services:
     env_file:
       - ${TVS_BE_PATH}/.env
     environment:
+      <<: *local-s3-env
       TVSDBHOSTNAME: database
       TVSDBPORT: 3306
       REDIS_URL: redis://redis:6379
-    command: ./start-local-server.sh
+    # Collect Django static (admin CSS/JS) into the be-static volume before
+    # booting, so nginx can serve /static. The /opt/app bind mount shadows the
+    # image's build-time collectstatic, and we keep the generated assets in a
+    # named volume (NOT the bind-mounted worktree) to leave the worktree pristine.
+    command: sh -c "python src/manage.py collectstatic --noinput && ./start-local-server.sh"
     depends_on:
       redis:
         condition: service_started
       database:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     ports:
-      - "${BACKEND_PORT:-8020}:8010"
+      # Publish to nginx (container :8020), which serves /static and proxies
+      # / -> gunicorn :8010. Publishing :8010 directly bypasses nginx, so the
+      # Django admin renders unstyled and /static/* 404s.
+      - "${BACKEND_PORT:-8020}:8020"
     networks:
       - tvs
     volumes:
       - ${TVS_BE_PATH}:/opt/app
+      # Hold collected static in a volume so nginx finds it at
+      # /opt/app/src/static without writing into the bind-mounted worktree.
+      - be-static:/opt/app/src/static
 
   frontend:
     image: node:22-alpine3.21
@@ -66,6 +96,50 @@ services:
     image: redis:7
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - tvs
+
+  # Local S3-compatible storage so creative/asset presigned uploads work
+  # without real AWS creds. Console at http://localhost:9001 (tvslocal /
+  # tvslocal123) to browse uploaded files.
+  minio:
+    image: minio/minio
+    command: server /data --address ":${MINIO_PORT:-9000}" --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: tvslocal
+      MINIO_ROOT_PASSWORD: tvslocal123
+    ports:
+      # API port must match inside and out — presigned URLs embed it.
+      - "${MINIO_PORT:-9000}:${MINIO_PORT:-9000}"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks:
+      tvs:
+        aliases:
+          # See x-local-s3-env note: same hostname for backend and browser.
+          - minio.localhost
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${MINIO_PORT:-9000}/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # One-shot: create the buckets the backend expects, then exit.
+  # tvs-telestream-us-west-2 mirrors the hardcoded TELESTREAM_S3_BUCKET so
+  # QC-enabled advertisers can still upload (QC itself can't run locally).
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://minio:${MINIO_PORT:-9000} tvslocal tvslocal123 &&
+      mc mb --ignore-existing
+      local/tvs-local-assets
+      local/tvs-local-icons
+      local/tvs-local-vast-input
+      local/tvs-telestream-us-west-2"
     networks:
       - tvs
 
@@ -100,6 +174,7 @@ services:
     env_file:
       - ${TVS_BE_PATH}/.env
     environment:
+      <<: *local-s3-env
       TVSDBHOSTNAME: database
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -140,3 +215,5 @@ networks:
 volumes:
   db-data:
   fe-node-modules:
+  minio-data:
+  be-static:

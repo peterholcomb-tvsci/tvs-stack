@@ -100,9 +100,91 @@ for strategy in BidStrategy.objects.all():
     strategy.advertisers.set(all_advertisers)
 for bundle in Bundle.objects.filter(private=True):
     bundle.advertisers.set(all_advertisers)
+# Sandbox buzz (tvscisbx) has no TVS-BIDDER-NONPROD custom bidder; Flat CPM
+# (required for PG) must use the standard CPM_PACED key to publish locally.
+flat_cpm_renamed = BidStrategy.objects.filter(type="flat_cpm").update(delivery_name="CPM_PACED")
 print(f"linked {BidStrategy.objects.count()} bid strategies, "
       f"{Bundle.objects.filter(private=True).count()} private bundles "
-      f"to {all_advertisers.count()} advertisers")
+      f"to {all_advertisers.count()} advertisers; "
+      f"flat_cpm delivery_name -> CPM_PACED ({flat_cpm_renamed} row)")
+'
+
+# Seeded advertisers come back with enable_qc=True (create_mock_data sets it,
+# and load_beeswax_account re-applies it), which routes creative uploads to
+# the Telestream QC bucket — but Telestream Cloud can't watch local MinIO or
+# call back to localhost, so QC'd uploads would hang forever. Disable QC
+# locally (must run LAST, after the Beeswax load): uploads then go to the
+# local assets bucket and get pushed straight to Beeswax on confirm.
+echo "==> Disabling QC on seeded advertisers (Telestream can't run locally)"
+run_be shell -c '
+from tvsapi.models import Advertiser
+n = Advertiser.objects.update(enable_qc=False)
+print(f"enable_qc=False on {n} advertisers")
+'
+
+# Campaigns can only launch when advertiser.billing_account.is_valid() — which
+# needs address + secondary-contact fields on the BillingAccount, a CC payment
+# profile, AND funding_type_cc_allowed on the org. create_mock_data only wires
+# (partial) billing for advertisers that exist at mock time; Beeswax-loaded
+# advertisers get none. Must run AFTER load_beeswax_account.
+echo "==> Ensuring valid billing accounts on all orgs + advertisers"
+run_be shell -c '
+from tvsapi.models import Advertiser, Organization, User
+from tvsapi.models.billing import BillingAccount, PaymentProfile
+
+contact = User.objects.filter(email="superuser@tvscientific.com").first() or User.objects.first()
+filler = {
+    "street_address": "100 California St",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94111",
+    "secondary_contact": "billing-qa@tvscientific.com",
+    "secondary_first_name": "QA",
+    "secondary_last_name": "Billing",
+}
+
+for org in Organization.objects.all():
+    if not org.funding_type_cc_allowed:
+        org.funding_type_cc_allowed = True
+        org.save()
+    ba = org.default_billing_account
+    if ba is None:
+        pp = PaymentProfile.objects.create(
+            organization=org, card_number="4242424242424242", card_type="Visa", expiration_date="12/25"
+        )
+        ba = BillingAccount.objects.create(
+            name=f"{org.name}\x27s Billing Account",
+            parent_org=org,
+            billing_method=BillingAccount.BillingMethod.CC,
+            primary_contact=contact,
+            default_payment_profile=pp,
+        )
+        org.default_payment_profile = pp
+        org.default_billing_account = ba
+        org.save()
+    if ba.default_payment_profile is None:
+        ba.default_payment_profile = PaymentProfile.objects.create(
+            organization=org, card_number="4242424242424242", card_type="Visa", expiration_date="12/25"
+        )
+    changed = False
+    for field, value in filler.items():
+        if not getattr(ba, field):
+            setattr(ba, field, value)
+            changed = True
+    if ba.archived:
+        ba.archived = False
+        changed = True
+    if changed or ba.default_payment_profile_id:
+        ba.save()
+    assert ba.is_valid(), f"BillingAccount {ba.pk} for org {org.pk} still invalid"
+
+linked = 0
+for adv in Advertiser.objects.filter(billing_account__isnull=True).select_related("primary_org"):
+    if adv.primary_org and adv.primary_org.default_billing_account:
+        adv.billing_account = adv.primary_org.default_billing_account
+        adv.save()
+        linked += 1
+print(f"valid billing on {Organization.objects.count()} orgs; linked {linked} advertisers")
 '
 
 echo "==> Seed complete."

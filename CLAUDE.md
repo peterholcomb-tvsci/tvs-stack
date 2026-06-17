@@ -4,7 +4,7 @@ This repo's job is to boot the **tvs-be** Django backend and **tvs-fe** React fr
 
 ## The pieces
 
-- `docker-compose.yml` — services: `backend`, `frontend`, `database` (MySQL 8), `redis`. `celery` + `flower` live in the optional `celery` profile.
+- `docker-compose.yml` — services: `backend`, `frontend`, `database` (MySQL 8), `redis`, `minio` (+ one-shot `minio-init` that creates buckets and exits — `Exited (0)` is its normal state). `celery` + `flower` live in the optional `celery` profile.
 - `start.sh` — wrapper that resolves worktree paths, validates them, and runs `docker compose up`.
 - `.env.example` — copy to `.env` to pin worktree paths and port overrides.
 
@@ -38,7 +38,76 @@ Other useful invocations:
 URLs once up:
 - Frontend: http://localhost:3000
 - Backend:  http://localhost:8020
+- MinIO console: http://localhost:9001 (tvslocal / tvslocal123) — browse uploaded assets
 - Flower:   http://localhost:5555 (only with `--celery`)
+
+## Creative/asset uploads (MinIO as local S3)
+
+`/v2/assets/upload_url/` presigns an S3 PUT; without AWS creds it 400s with
+`ASSET_STORAGE_PRESIGNED_URL_GENERATION_FAILED_ERROR` (`NoCredentialsError`
+under the hood). The stack therefore runs **MinIO** and injects into the
+backend/celery env (compose `x-local-s3-env` block): `AWS_ENDPOINT_URL_S3`,
+MinIO creds, and local bucket names (`tvs-local-assets`, `tvs-local-icons`,
+`tvs-local-vast-input`, plus `tvs-telestream-us-west-2` mirroring the
+hardcoded `TELESTREAM_S3_BUCKET`). boto3 honors `AWS_ENDPOINT_URL_S3`
+natively — no BE code changes.
+
+How the flow works locally:
+1. BE presigns a PUT URL on `http://minio.localhost:${MINIO_PORT:-9000}`. The
+   hostname resolves **both** ways: in-network via a compose alias on the
+   `minio` service, and in browsers because they resolve `*.localhost` to
+   127.0.0.1 (Chrome/Firefox do; plain `curl` does NOT — use
+   `--resolve minio.localhost:9000:127.0.0.1` when testing by hand, and add
+   an `/etc/hosts` entry if your browser ever doesn't).
+2. The browser PUTs the file straight to MinIO.
+3. `confirm_upload` head-checks the object, then for non-QC advertisers either
+   leaves it in the VAST input bucket (VAST flag on) or downloads the bytes
+   and pushes them to **Beeswax** (flag off) — Beeswax never reads the bucket,
+   so a local MinIO carries the full flow. Mind which Beeswax domain
+   `tvs-be/.env` points at before confirming uploads (sandbox vs prod!).
+
+Caveats:
+- **The FE dev server's CSP must allow the MinIO origin.** `tvs-fe/tools/srcServer.js`
+  sets a `connect-src` allowlist; without `http://minio.localhost:9000` in it the
+  browser blocks the presigned PUT ("violates the following Content Security
+  Policy directive: connect-src ..."). Add it next to the `API_URL`
+  interpolation (one line; dev-server-only file, CloudFront CSP for deployed
+  envs is unaffected). Until that lands upstream in tvs-fe, EACH FE worktree
+  needs the edit, and the dev server must be restarted to pick it up.
+- **QC (Telestream) cannot run locally** — Telestream Cloud watches the real
+  AWS bucket and posts webhooks that can't reach localhost. `seed/seed.sh`
+  sets `enable_qc=False` on all advertisers after seeding for this reason
+  (create_mock_data seeds them with QC on). A QC-enabled advertiser's upload
+  still lands in the local `tvs-telestream-us-west-2` bucket, but its
+  creative stays in QC-pending forever.
+- Same for VAST transcoding (MediaConvert/SNS) — the upload + creative
+  creation work, but no transcode happens locally.
+- MinIO data lives in the `minio-data` volume: survives `--down` and
+  `--reset-db`, wiped by `--reset` / `down -v`.
+- To use **real AWS** instead, delete the `x-local-s3-env` injection from
+  docker-compose.yml and put `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/
+  `AWS_DEFAULT_REGION` + real bucket names in `tvs-be/.env`.
+
+## Django admin static files (why /admin/ was unstyled)
+
+The backend container runs **both** gunicorn (`:8010`) and **nginx** (`:8020`)
+via `start-server.sh`. nginx is the piece that serves `/static` (`root
+/opt/app/src`) and proxies `/` → gunicorn. So compose must publish the host
+port to **container `:8020` (nginx), not `:8010` (gunicorn)** — hitting
+gunicorn directly bypasses nginx, and gunicorn serves no static, so the admin
+renders unstyled and `/static/admin/css/base.css` 404s.
+
+Two compose-side pieces make admin CSS work (BE worktree is untouched):
+- `ports: "${BACKEND_PORT:-8020}:8020"` — host traffic lands on nginx.
+- A `be-static` **named volume** mounted at `/opt/app/src/static`, plus a
+  `command` that runs `collectstatic --noinput` before `start-local-server.sh`.
+  The `${TVS_BE_PATH}:/opt/app` bind mount shadows the image's build-time
+  collectstatic, so we recollect at boot — into a volume (not the
+  bind-mounted worktree) to keep the worktree pristine.
+
+Note: `/admin/login/` 302-redirects to `/account/login/` (the django-two-factor
+2FA login) — that's app behavior, not a static problem. Get a TOTP code for the
+local `qaadmin` user with `./qa-admin-otp.sh`.
 
 ## How env / secrets work
 
@@ -131,6 +200,22 @@ Two modes worth knowing:
   docker compose exec -T -w /opt/app/src backend python manage.py showmigrations | grep -c '\[ \]'   # want 0
   ```
   A fresh full migrate takes a few minutes (~hundreds of migrations).
+- **`showmigrations` can lie: 0 unapplied does NOT mean schema matches code.** It only compares names against `django_migrations` rows. If tables get restored/replaced from a dump of an env with a different schema (or a rollback goes sideways), you get `OperationalError (1054, "Unknown column ...")` on tables whose migrations are all "applied". Diff models vs schema to scope it:
+  ```sh
+  docker compose exec -T -w /opt/app/src backend python manage.py shell -c '
+  from django.apps import apps
+  from django.db import connection
+  with connection.cursor() as cur:
+      cur.execute("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = DATABASE()")
+      db = {}
+      for t, c in cur.fetchall(): db.setdefault(t, set()).add(c)
+  for m in apps.get_models():
+      t = m._meta.db_table
+      for f in m._meta.local_fields:
+          if t in db and f.column not in db[t]: print(f"{t}.{f.column}")'
+  ```
+  Small drift → hand-write `ALTER TABLE ... ADD COLUMN` matching the model defs (and `CREATE OR REPLACE VIEW` from the latest `views/migrations` SQL for `view_*` tables). Big drift → `--reset-db`. (Hit 2026-06-03: 12 columns missing — incrementality/experiment fields — with all migrations "applied".)
+- **A long-running backend container runs STALE code after a worktree branch switch.** gunicorn loads Python at boot; switching the worktree branch underneath leaves the container serving the old code (which can mask schema drift — see above). Recreate the backend after switching branches.
 - **NEVER recreate/restart the backend while it's mid-migration.** MySQL auto-commits DDL, so an interrupted migrate leaves orphan tables with no `django_migrations` row. The next migrate then dies with `(1050, "Table '...' already exists")` and the schema is stuck half-applied (symptom we hit: `Unknown column 'tvsapi_user._uses_looker'`). Fix = `--reset-db` and let migrate finish uninterrupted. Corollary: set Beeswax/env creds **before** the reset, or recreate the backend only *after* migrations report 0 unapplied.
 - **`docker compose restart` does NOT reload `env_file`.** After editing a worktree `.env`, use `docker compose up -d --force-recreate backend` (or restart the whole stack) to pick up new values — but only when not mid-migration (above).
 - **Don't run from inside a worktree subdir** — `start.sh` must run from `tvs-stack/`; it resolves paths relative to itself.
