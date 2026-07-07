@@ -160,6 +160,25 @@ for a in BeeswaxClient().get(f"{BeeswaxClient().url}/account/").json()["payload"
 
 Auth failures show as `BeeswaxException: Incorrect authentication credentials` — that's a wrong email/password (or wrong domain for those creds), not an account-scoping issue. Don't hammer it; failed auths can lock the account.
 
+## Launching a campaign to the Beeswax sandbox (local E2E)
+
+Building AND launching a full campaign (incl. video + display-retargeting ad groups) against the sandbox needs reference/config data a fresh DB lacks. `seed/seed.sh` now seeds all of it (see that file for the why on each):
+
+- **SimplifiedBidStrategy** rows (migration 0299 runs before the BidStrategy fixture loads, so it no-ops on a fresh DB → the ad-group Bid Strategy tiles are empty and Save is silently disabled with "Please select a bid strategy").
+- **TargetingGroups** linked to the top-level InventoryBundles (drive the "Select an inventory option" tiles).
+- **InventorySource + a Deal per bundle** (serializer rejects save: "Included bundles must have at least one deal").
+- **Bid strategy `delivery_name` remap** `TVS-BIDDER-NONPROD` → `CPM_PACED` (sandbox has no custom bidder → "invalid bidding strategy key: TVS-BIDDER-NONPROD").
+- **IP/bot blocklists disabled** on advertisers (they inject `tvsci-222987` / `tvsci-161525` exclusion segments that only exist in prod BW → "Unrecognized segment keys").
+
+The `InventoryBundle` + `RetargetingSegments` fixtures live in **`tvs-stack/seed/fixtures/`** (kept out of the app repo on purpose) and are piped into the container's `loaddata` over stdin by seed.sh. The other fixtures (BidStrategy/Bundle/AudienceType/Audience) are the BE repo's own, loaded from the worktree's `local_db_fixtures/`.
+
+**One thing seed.sh can't set (it's a Django setting, read from `tvs-be/.env` at boot, not the DB):** unset `BEESWAX_BID_MODIFIER_ID` and `BEESWAX_DELIVERY_MODIFIER_ID` in the BE worktree's `.env`. Those point at prod-only BW bid/delivery modifier objects (709/706); with them set, **video** line items using CPM_PACED fail to publish with "CPM_PACED is not enabled for delivery models" / "Max bid is required when bid modifier is set". Comment them out so they default to `None`, then recreate the backend **and** celery to pick it up (`docker compose up -d --force-recreate backend celery` — `restart` does NOT reload `env_file`).
+
+Caveats even when all of the above is done:
+- **Campaign/ad-group start dates must not be in the past** (the fixture/mock dates can drift behind the container clock) — the launch blocks with "Start date must not be in the past".
+- **Video line items publish but stay PENDING**, not ACTIVE — there's no local video transcoding (MediaConvert), so the video creative never finishes processing and BW won't fully activate the line item. The display (static image) ad group goes ACTIVE. The line item IS created in BW (gets a `beeswax_lid` + `beeswax_teid`); PENDING is expected locally, not a sync failure.
+- The line-item sync runs in the **celery** worker, so `./start.sh --celery` (or the celery profile) must be up for launches to reach Beeswax.
+
 ## Logging in with your Okta user
 
 There are two layers that need to agree on which Okta tenant to use:

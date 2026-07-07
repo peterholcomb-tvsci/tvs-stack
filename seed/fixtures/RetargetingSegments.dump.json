@@ -1,0 +1,155 @@
+[
+  {
+    "model": "audiences.segmentgroup",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.598Z",
+      "display_name": null,
+      "is_targetable": false,
+      "notes": null,
+      "ordering": null,
+      "segment_group_name": "My Data",
+      "segment_type": "",
+      "tag": "my_data",
+      "updated_at": "2026-07-07T12:15:08.598Z",
+      "advertisers": [],
+      "segments": [],
+      "segment_group_elements": [
+        2
+      ]
+    }
+  },
+  {
+    "model": "audiences.segmentgroup",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.609Z",
+      "display_name": "Ad Exposure Segments",
+      "is_targetable": false,
+      "notes": null,
+      "ordering": null,
+      "segment_group_name": "Ad Exposure Segments",
+      "segment_type": "",
+      "tag": "my_data_ad_exposure",
+      "updated_at": "2026-07-07T12:15:08.837Z",
+      "advertisers": [],
+      "segments": [],
+      "segment_group_elements": [
+        3,
+        4,
+        5
+      ]
+    }
+  },
+  {
+    "model": "audiences.segmentgroup",
+    "pk": 3,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.648Z",
+      "display_name": null,
+      "is_targetable": true,
+      "notes": null,
+      "ordering": null,
+      "segment_group_name": "Exposed Users (Campaign ID 109 Ad Group ID 9001)",
+      "segment_type": "retargeting",
+      "tag": null,
+      "updated_at": "2026-07-07T12:15:08.722Z",
+      "advertisers": [],
+      "segments": [
+        1
+      ],
+      "segment_group_elements": []
+    }
+  },
+  {
+    "model": "audiences.segmentgroup",
+    "pk": 4,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.780Z",
+      "display_name": null,
+      "is_targetable": true,
+      "notes": null,
+      "ordering": null,
+      "segment_group_name": "Exposed Users (Campaign ID 109 Ad Group ID 9002)",
+      "segment_type": "retargeting",
+      "tag": null,
+      "updated_at": "2026-07-07T12:15:08.801Z",
+      "advertisers": [],
+      "segments": [
+        2
+      ],
+      "segment_group_elements": []
+    }
+  },
+  {
+    "model": "audiences.segmentgroup",
+    "pk": 5,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.823Z",
+      "display_name": null,
+      "is_targetable": true,
+      "notes": null,
+      "ordering": null,
+      "segment_group_name": "Exposed Users (Campaign ID 107 Ad Group ID 9003)",
+      "segment_type": "retargeting",
+      "tag": null,
+      "updated_at": "2026-07-07T12:15:08.846Z",
+      "advertisers": [],
+      "segments": [
+        3
+      ],
+      "segment_group_elements": []
+    }
+  },
+  {
+    "model": "audiences.segment",
+    "pk": 1,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.636Z",
+      "is_archived": false,
+      "external_id": "17-C-109-ADG-9001",
+      "raw_source": "e2e_seed",
+      "segment_key": "tvsci-e2e-109-9001",
+      "segment_name": "Exposed Users (Campaign ID 109 Ad Group ID 9001)",
+      "segment_type": "retargeting",
+      "notes": null,
+      "ttl": 90,
+      "updated_at": "2026-07-07T12:15:08.647Z",
+      "advertisers": []
+    }
+  },
+  {
+    "model": "audiences.segment",
+    "pk": 2,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.771Z",
+      "is_archived": false,
+      "external_id": "17-C-109-ADG-9002",
+      "raw_source": "e2e_seed",
+      "segment_key": "tvsci-e2e-109-9002",
+      "segment_name": "Exposed Users (Campaign ID 109 Ad Group ID 9002)",
+      "segment_type": "retargeting",
+      "notes": null,
+      "ttl": 90,
+      "updated_at": "2026-07-07T12:15:08.776Z",
+      "advertisers": []
+    }
+  },
+  {
+    "model": "audiences.segment",
+    "pk": 3,
+    "fields": {
+      "created_at": "2026-07-07T12:15:08.811Z",
+      "is_archived": false,
+      "external_id": "17-C-107-ADG-9003",
+      "raw_source": "e2e_seed",
+      "segment_key": "tvsci-e2e-107-9003",
+      "segment_name": "Exposed Users (Campaign ID 107 Ad Group ID 9003)",
+      "segment_type": "retargeting",
+      "notes": null,
+      "ttl": 90,
+      "updated_at": "2026-07-07T12:15:08.818Z",
+      "advertisers": []
+    }
+  }
+]

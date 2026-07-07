@@ -85,12 +85,29 @@ else
   echo "==> Skipping Beeswax load (pass --with-beeswax to enable)"
 fi
 
-echo "==> Loading fixtures (BidStrategy, Bundle, AudienceType, Audience)"
+echo "==> Loading BE-repo fixtures (BidStrategy, Bundle, AudienceType, Audience)"
 run_be loaddata \
   ./local_db_fixtures/BidStrategy.dump.json \
   ./local_db_fixtures/Bundle.dump.json \
   ./local_db_fixtures/AudienceType.dump.json \
   ./local_db_fixtures/Audience.dump.json
+
+# These two fixtures live in THIS repo (tvs-stack/seed/fixtures), NOT in tvs-be —
+# we deliberately keep local-E2E seed data out of the app repo. They aren't on a
+# path the backend container can see, so pipe each into loaddata over stdin
+# ("loaddata --format=json -" reads one fixture from stdin; run_be already uses -T
+# so the redirect below reaches the container).
+#   InventoryBundle: without these top-level v2 inventory bundles the wizard's
+#     "Select an inventory option" list is empty and no ad group can be completed
+#     (blocks Save/Launch). References Country (reference data, present after migrate).
+#   RetargetingSegments: "My Data -> Ad Exposure -> Exposed Users (Campaign ID N ...)"
+#     groups + segments so the display-retargeting Audience Builder search by
+#     Campaign/Ad-Group ID has data. Seeded advertiser-agnostic (global) so they're
+#     visible to any advertiser and don't depend on a specific advertiser id existing.
+echo "==> Loading tvs-stack local fixtures (InventoryBundle, RetargetingSegments)"
+for fx in InventoryBundle RetargetingSegments; do
+  run_be loaddata --format=json - < "$SEED_DIR/fixtures/$fx.dump.json"
+done
 
 echo "==> Linking bid strategies / private bundles to all advertisers"
 run_be shell -c '
@@ -100,13 +117,95 @@ for strategy in BidStrategy.objects.all():
     strategy.advertisers.set(all_advertisers)
 for bundle in Bundle.objects.filter(private=True):
     bundle.advertisers.set(all_advertisers)
-# Sandbox buzz (tvscisbx) has no TVS-BIDDER-NONPROD custom bidder; Flat CPM
-# (required for PG) must use the standard CPM_PACED key to publish locally.
+# Sandbox buzz (tvscisbx) has no TVS-BIDDER-NONPROD custom bidder, so ANY line
+# item whose bid strategy delivers as TVS-BIDDER-NONPROD (the outcome/auto
+# strategies: max_outcomes, max_roas, max_impressions, auto_bid, ...) fails to
+# publish with "invalid bidding strategy key: TVS-BIDDER-NONPROD". Remap them all
+# — plus Flat CPM (required for PG) — to the standard native CPM_PACED key so
+# campaigns can launch locally. (Outcome optimization is a no-op in the sandbox;
+# CPM_PACED just lets Beeswax accept the line item.)
+nonprod_renamed = BidStrategy.objects.filter(delivery_name="TVS-BIDDER-NONPROD").update(delivery_name="CPM_PACED")
 flat_cpm_renamed = BidStrategy.objects.filter(type="flat_cpm").update(delivery_name="CPM_PACED")
 print(f"linked {BidStrategy.objects.count()} bid strategies, "
       f"{Bundle.objects.filter(private=True).count()} private bundles "
       f"to {all_advertisers.count()} advertisers; "
-      f"flat_cpm delivery_name -> CPM_PACED ({flat_cpm_renamed} row)")
+      f"delivery_name -> CPM_PACED (TVS-BIDDER-NONPROD x{nonprod_renamed}, flat_cpm x{flat_cpm_renamed})")
+'
+
+# The campaign wizard needs several pieces of reference data that a fresh DB lacks,
+# without which no ad group can be built OR launched to the Beeswax sandbox:
+#   1. SimplifiedBidStrategy rows — migration 0299 populates these by looking up
+#      BidStrategy types, but it runs at container boot BEFORE the BidStrategy
+#      fixture is loaded here, so it finds nothing and creates zero rows. Result:
+#      the ad-group "Bid Strategy" selector renders no tiles, simplified_bid_strategy
+#      stays null, and Save is silently disabled ("Please select a bid strategy").
+#      Re-run 0299'"'"'s mapping now that BidStrategy exists.
+#   2. TargetingGroups linked to the top-level (level=0) InventoryBundles — the
+#      wizard'"'"'s "Select an inventory option" tiles are driven by TargetingGroups
+#      (releaseTargetingGroupsApiInventoryTiles); with none, the list is empty.
+#   3. An InventorySource + >=1 Deal per included bundle — the serializer rejects
+#      save with "Included bundles must have at least one deal."
+echo "==> Seeding wizard inventory + simplified bid strategy data (build + launch)"
+run_be shell -c '
+from decimal import Decimal
+from tvsapi.models import BidStrategy, SimplifiedBidStrategy
+from targeting.models.inventory_bundle import TargetingGroup, InventoryBundle
+from targeting.models.deal import Deal
+from targeting.models.inventory_source import InventorySource
+
+# 1. SimplifiedBidStrategy (mirrors migration 0299_populate_simplified_bid_strategy_data,
+#    with the 0331 "Manual Bidding" -> "Simple Bidding" rename applied).
+sbs_map = [
+    ("Cost per Outcome",  "cost_per_outcome", "INTELLIGENT", "Dynamically optimize bidding to minimize Cost per Outcome",  True,  "max_outcomes"),
+    ("ROAS",              "roas",             "INTELLIGENT", "Dynamically optimize bidding to maximize Return On Ad Spend", False, "max_roas"),
+    ("CPM",               "cpm",              "INTELLIGENT", "Dynamically optimize bidding for lowest Cost per Impression", False, "max_impressions"),
+    ("Brand Engagement",  "brand_engagement", "INTELLIGENT", "Dynamically optimize bidding for any outcome",               False, "max_outcomes"),
+    ("Simple Bidding",    "manual",           "MANUAL",      "",                                                            False, "auto_bid"),
+]
+sbs_made = 0
+for display_name, type_, category, desc, has_event, orig in sbs_map:
+    bs = BidStrategy.objects.filter(type=orig).first()
+    if not bs:
+        continue
+    _, created = SimplifiedBidStrategy.objects.get_or_create(
+        type=type_,
+        defaults=dict(display_name=display_name, category=category, description=desc,
+                      has_event=has_event, original_bid_strategy=bs),
+    )
+    sbs_made += int(created)
+
+# 2. TargetingGroups + link each to its top-level InventoryBundle (by bundle name).
+tg_map = [
+    ("max_reach",   "Maximum Reach",       "0001", "Maximum Reach"),
+    ("sports",      "Live Sports",         "0002", "Sports Bundle"),
+    ("performance", "Maximum Performance", "0003", "Max Performance"),
+]
+for name, display_name, ordering, bundle_name in tg_map:
+    tg, _ = TargetingGroup.objects.get_or_create(
+        name=name, defaults=dict(display_name=display_name, ordering=ordering))
+    b = InventoryBundle.objects.filter(name=bundle_name, level=0).first()
+    if b:
+        b.targeting_groups.add(tg)
+
+# 3. InventorySource + one Deal per top-level bundle (bundles must have >=1 deal).
+src, _ = InventorySource.objects.get_or_create(
+    external_key="tvs-local-ssp", defaults={"name": "tvScientific Local SSP"})
+deals_made = 0
+for b in InventoryBundle.objects.filter(level=0):
+    if b.deal_list_items.exists():
+        continue
+    deal, created = Deal.objects.get_or_create(
+        supply_source_deal_id=f"tvs-local-deal-{b.id}",
+        defaults=dict(name=f"Local Deal for {b.name}", inventory_source=src,
+                      supported_format=b.format, deal_type=Deal.DealTypes.PMP,
+                      private=False, floor_price=Decimal("1.00")),
+    )
+    b.deal_list_items.add(deal)
+    deals_made += int(created)
+
+print(f"SimplifiedBidStrategy +{sbs_made} (total {SimplifiedBidStrategy.objects.count()}); "
+      f"TargetingGroups total {TargetingGroup.objects.count()}; "
+      f"Deals +{deals_made} on {InventoryBundle.objects.filter(level=0).count()} top-level bundles")
 '
 
 # Seeded advertisers come back with enable_qc=True (create_mock_data sets it,
@@ -115,11 +214,23 @@ print(f"linked {BidStrategy.objects.count()} bid strategies, "
 # call back to localhost, so QC'd uploads would hang forever. Disable QC
 # locally (must run LAST, after the Beeswax load): uploads then go to the
 # local assets bucket and get pushed straight to Beeswax on confirm.
-echo "==> Disabling QC on seeded advertisers (Telestream can't run locally)"
+#
+# Also disable the IP/bot blocklists: they append the DS-flagged-IPs
+# (TVSCI_DS_FLAGGED_IPS_SEGMENT, tvsci-222987) and flagged-datacenters
+# (TVSCI_FLAGGED_DATACENTERS_SEGMENT, tvsci-161525) segments as a NOT(...)
+# exclusion on every line item'"'"'s targeting expression. Those segment keys only
+# exist in production Beeswax, so with the flags on, launching to the sandbox
+# fails with "Unrecognized segment keys: tvsci-161525, tvsci-222987".
+echo "==> Disabling QC + IP blocklists on seeded advertisers (not available locally)"
 run_be shell -c '
 from tvsapi.models import Advertiser
-n = Advertiser.objects.update(enable_qc=False)
-print(f"enable_qc=False on {n} advertisers")
+n = Advertiser.objects.update(
+    enable_qc=False,
+    use_ip_blocklist=False,
+    use_ds_powered_ip_blocklist=False,
+    use_data_centers_etc_ip_blocklist=False,
+)
+print(f"enable_qc + IP blocklists disabled on {n} advertisers")
 '
 
 # Campaigns can only launch when advertiser.billing_account.is_valid() — which
