@@ -1,0 +1,23 @@
+# Optional local Compose override — copy to `docker-compose.override.yml` to use it.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Docker Compose AUTO-LOADS docker-compose.override.yml when present (no flags
+# needed), merging it on top of docker-compose.yml. The real file is gitignored
+# so these tweaks stay machine-local.
+#
+# This particular override trades a couple of features for a faster/simpler boot:
+#   • backend: runs gunicorn DIRECTLY on :8020 instead of behind nginx, and skips
+#     collectstatic. Faster to start, BUT nginx is what serves /static — so the
+#     Django admin renders UNSTYLED and /static/* 404s. Fine if you don't use
+#     /admin; use the default (no override) if you do. See CLAUDE.md → "Django
+#     admin static files".
+#   • frontend: runs `npm run open:src` instead of the default `npm run start:short`.
+services:
+  backend:
+    working_dir: /opt/app/src
+    command: ["sh", "-c", "until python -c 'import socket; s=socket.create_connection((\"database\",3306),2); s.close()' 2>/dev/null; do sleep 2; done && python manage.py migrate --noinput && gunicorn tvs.wsgi --bind 0.0.0.0:8020 --workers 2 --timeout 300 --access-logfile - --error-logfile -"]
+    ports:
+      - "${BACKEND_PORT:-8020}:8020"
+  frontend:
+    command: ["sh", "-c", "apk add --no-cache --update npm git && npm install && npm run open:src"]

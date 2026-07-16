@@ -2,6 +2,39 @@
 
 This repo's job is to boot the **tvs-be** Django backend and **tvs-fe** React frontend together against a shared MySQL + Redis, sourcing each app from a local worktree the user points at. Useful when iterating on both sides at once.
 
+## Working in this repo (read this first)
+
+Orientation and working agreements for anyone — human or Claude — making changes here.
+
+- **This repo only wires services together; it deploys nothing.** The application code
+  lives in the sibling worktrees `tvs-be` and `tvs-fe` (pointed at by `TVS_BE_PATH` /
+  `TVS_FE_PATH`). To change app behavior, edit those worktrees. To change how they boot
+  together, edit `docker-compose.yml` / `start.sh` here. Everything this stack runs is
+  **local dev** — there is no prod surface in this repo.
+- **Beeswax is a real, shared external system — treat it carefully.** Before *any* Beeswax
+  operation (including `--seed --with-beeswax`, which is read-only GETs), confirm you're on
+  the **sandbox** (`BEESWAX_DOMAIN=tvscisbx.api.beeswax.com`) and not production
+  (`tvsci.api.beeswax.com`), and say out loud which account you're about to touch before
+  running it. Account numbers differ between sandbox and prod, so never copy an id across
+  domains. Prefer the safest scope by default and don't hammer auth (failed logins can lock
+  the account). See "Connecting to Beeswax — sandbox vs prod" below for the read-only
+  account-listing recipe.
+- **Destructive commands need explicit sign-off.** `--reset` and `--reset-db` wipe volumes
+  (and thus the local DB / seeded data). Don't run them unprompted — confirm with the user
+  first. And never recreate or restart the backend **mid-migration** (see the gotcha below);
+  an interrupted migrate leaves the schema half-applied.
+- **Long-running containers serve stale code.** gunicorn loads Python at boot and Django
+  auto-reload is off in this setup, so after editing BE Python (or switching the BE worktree
+  branch) you must `docker compose restart backend` (or recreate it) to pick up changes.
+  FE, templates, and static hot-reload fine.
+- **When diagnosing "it's broken," check stack state before theorizing.** Confirm migrations
+  finished (`showmigrations | grep -c '\[ \]'` → want 0), and if you see `Unknown column`
+  errors, run the model-vs-schema drift diff (both scripts are in the gotchas below) rather
+  than trusting `showmigrations`.
+- **`.env` files are per-worktree and never synced by this repo** — that's intentional.
+  Switching worktrees changes the env you boot against. Machine-specific compose tweaks
+  belong in a gitignored `docker-compose.override.yml`, not in `docker-compose.yml`.
+
 ## The pieces
 
 - `docker-compose.yml` — services: `backend`, `frontend`, `database` (MySQL 8), `redis`, `minio` (+ one-shot `minio-init` that creates buckets and exits — `Exited (0)` is its normal state). `celery` + `flower` live in the optional `celery` profile.

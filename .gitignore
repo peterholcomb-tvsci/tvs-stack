@@ -1,3 +1,7 @@
 .env
 .env.local
 .DS_Store
+
+# Machine-specific Compose tweaks. Compose auto-loads this file if present,
+# so it's kept local — copy docker-compose.override.yml.example to start.
+docker-compose.override.yml
