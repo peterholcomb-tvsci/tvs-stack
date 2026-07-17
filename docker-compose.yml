@@ -47,6 +47,7 @@ services:
     # booting, so nginx can serve /static. The /opt/app bind mount shadows the
     # image's build-time collectstatic, and we keep the generated assets in a
     # named volume (NOT the bind-mounted worktree) to leave the worktree pristine.
+    working_dir: /opt/app
     command: sh -c "python src/manage.py collectstatic --noinput && ./start-local-server.sh"
     depends_on:
       redis:
@@ -56,10 +57,9 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      # Publish to nginx (container :8020), which serves /static and proxies
-      # / -> gunicorn :8010. Publishing :8010 directly bypasses nginx, so the
-      # Django admin renders unstyled and /static/* 404s.
-      - "${BACKEND_PORT:-8020}:8020"
+      # Temporarily connecting directly to gunicorn on 8010 since nginx isn't in container
+      # Admin will be unstyled but functional
+      - "${BACKEND_PORT:-8020}:8010"
     networks:
       - tvs
     volumes:

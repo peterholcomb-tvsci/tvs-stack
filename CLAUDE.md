@@ -41,9 +41,34 @@ Orientation and working agreements for anyone — human or Claude — making cha
 - `start.sh` — wrapper that resolves worktree paths, validates them, and runs `docker compose up`.
 - `.env.example` — copy to `.env` to pin worktree paths and port overrides.
 
+## Docker runtime: Colima vs Docker Desktop
+
+This stack works with either **Colima** or **Docker Desktop**. Colima is recommended for macOS as it's lighter and faster.
+
+### Using Colima (recommended for macOS)
+
+```sh
+brew install colima docker docker-credential-helper-ecr
+colima start --cpu 4 --memory 8 --network-address
+```
+
+**Important:** The `--network-address` flag is **required** for proper port forwarding from the VM to your host. Without it, containers run fine internally but `localhost:3000` and `localhost:8020` won't be accessible.
+
+**Common Colima issues:**
+- **Port forwarding broken** (connection refused or empty reply): Restart with `colima stop && colima start --cpu 4 --memory 8 --network-address`
+- **Corrupted state** (socket errors): `colima delete -f && colima start --cpu 4 --memory 8 --network-address`
+- **VZ networking unreliable**: Switch to QEMU: `colima delete -f && colima start --cpu 4 --memory 8 --vm-type qemu`
+
+Check status: `colima status` should show "running using macOS Virtualization.Framework" (VZ) or "running using QEMU".
+
+### Using Docker Desktop
+
+Install and start Docker Desktop. Port forwarding "just works" but it's heavier than Colima.
+
 ## Quick start
 
 ```sh
+# Make sure Colima or Docker Desktop is running
 cp .env.example .env          # then edit TVS_BE_PATH and TVS_FE_PATH if not siblings
 ./start.sh                     # boots BE + FE + MySQL + Redis, tails logs
 ```
@@ -220,14 +245,6 @@ There are two layers that need to agree on which Okta tenant to use:
 
 `npm run start:livebe` works for the user because both BE *and* FE are pointed at `login.thefinstore.com` with the same client ID `0oacl36ns5RqBYrvX5d5`. To reuse that same Okta user against the **local** backend you booted here, set the FE `.env` to those same Okta values (mirror `tvs-fe/.env.livebe`'s Okta lines) while leaving `API_URL=http://localhost:8020`. That gives you: local BE, local FE, real Okta auth, real Beeswax sandbox — the most common dev loop.
 
-## Logging in with your Okta user (the second question)
-
-There are two layers that need to agree on which Okta tenant to use:
-- BE — `OKTA_DOMAIN` / `OKTA_CLIENT_ID` in `tvs-be/.env`.
-- FE — `REACT_APP_OKTA_ORG_URL` / `REACT_APP_OKTA_CLIENT_ID` in `tvs-fe/.env`.
-
-`npm run start:livebe` works for the user because both BE *and* FE are pointed at `login.thefinstore.com` with the same client ID `0oacl36ns5RqBYrvX5d5`. To reuse that same Okta user against the **local** backend you booted here, set the FE `.env` to those same Okta values (mirror `tvs-fe/.env.livebe`'s Okta lines) while leaving `API_URL=http://localhost:8020`. That gives you: local BE, local FE, real Okta auth, real Beeswax sandbox — the most common dev loop.
-
 Two modes worth knowing:
 
 1. **Local everything** — FE → local BE → Beeswax sandbox. `API_URL=http://localhost:8020`. Best for full-stack dev.
@@ -276,17 +293,6 @@ Two modes worth knowing:
 - **First boot is slow** — backend installs all Python deps + collectstatic; FE installs all npm deps. Subsequent boots reuse the cached image / named volume.
 - **File watching on macOS** — the FE container runs with `CHOKIDAR_USEPOLLING=true` so webpack picks up edits through the bind mount. Slightly higher CPU; necessary on Docker Desktop.
 - **DB data persists** in the `db-data` named volume across `--down`. To nuke it: `./start.sh --reset-db` (or `docker compose down -v`).
-- **`local_db_init/` from the BE worktree** is mounted into the MySQL container's init-dir — same as `tvs-be/dev-docker-compose.yml`. So switching BE worktrees can change init SQL on a fresh DB.
-- **The backend uses `start-local-server.sh`** which waits for `database:3306` and then runs `gunicorn` (not `python manage.py runserver`). Django auto-reload does NOT work in this mode — code changes are bind-mounted but you need to `docker compose restart backend` to pick up Python code edits. Templates, static, and FE changes hot-reload fine.
-- **Port conflicts** — if you already run MySQL/Redis on the host, override `MYSQL_PORT`/`REDIS_PORT` in `.env` (host side only; the in-network services still listen on the canonical ports).
-- **Don't commit `.env`** — `.gitignore` covers it. Worktree-side `.env` files are also gitignored in their respective repos.
-- **Pre-commit on tvs-be** can fail if you `docker compose exec backend` and run git there — the container doesn't have the hook tooling.
-
-- **Don't run from inside a worktree subdir** — `start.sh` must run from `tvs-stack/`; it resolves paths relative to itself.
-- **FE node_modules are in a named volume** (`fe-node-modules`) to keep them off the host bind-mount (otherwise alpine-built modules clash with the host's). If you change `package.json`, run `./start.sh --build` or `docker compose run --rm frontend npm install`.
-- **First boot is slow** — backend installs all Python deps + collectstatic; FE installs all npm deps. Subsequent boots reuse the cached image / named volume.
-- **File watching on macOS** — the FE container runs with `CHOKIDAR_USEPOLLING=true` so webpack picks up edits through the bind mount. Slightly higher CPU; necessary on Docker Desktop.
-- **DB data persists** in the `db-data` named volume across `--down`. To nuke it: `docker compose down -v`.
 - **`local_db_init/` from the BE worktree** is mounted into the MySQL container's init-dir — same as `tvs-be/dev-docker-compose.yml`. So switching BE worktrees can change init SQL on a fresh DB.
 - **The backend uses `start-local-server.sh`** which waits for `database:3306` and then runs `gunicorn` (not `python manage.py runserver`). Django auto-reload does NOT work in this mode — code changes are bind-mounted but you need to `docker compose restart backend` to pick up Python code edits. Templates, static, and FE changes hot-reload fine.
 - **Port conflicts** — if you already run MySQL/Redis on the host, override `MYSQL_PORT`/`REDIS_PORT` in `.env` (host side only; the in-network services still listen on the canonical ports).
