@@ -18,7 +18,13 @@ sibling repos; you check those out separately and this stack mounts them in.
 
 ## 1. Prerequisites
 
-- **Docker Desktop**, running.
+- **Docker runtime**: Either **Colima** (recommended for macOS) or **Docker Desktop**
+  - **Colima** (lighter, faster):
+    ```sh
+    brew install colima docker docker-credential-helper-ecr
+    colima start --cpu 4 --memory 8 --network-address
+    ```
+  - **Docker Desktop**: Install and make sure it's running
 - Local clones of **tvs-be** and **tvs-fe**. By default they're expected as siblings of
   this repo (`../tvs-be`, `../tvs-fe`); you can point elsewhere (see step 3).
 - **Each app needs its own `.env`** — this stack does *not* create them for you:
@@ -102,6 +108,57 @@ no nginx, no collectstatic — note this leaves the Django admin unstyled):
 
 ```sh
 cp docker-compose.override.yml.example docker-compose.override.yml   # opt in
+```
+
+## Troubleshooting
+
+### Colima port forwarding issues
+
+If containers are running but `curl http://localhost:8020` fails (connection refused or empty reply):
+
+**Restart Colima with proper networking:**
+```sh
+docker compose down
+colima stop
+colima start --cpu 4 --memory 8 --network-address
+docker compose up -d
+```
+
+The `--network-address` flag fixes port forwarding from the VM to your Mac. Without it, containers can run fine internally but be unreachable from your host.
+
+**If that doesn't work, try QEMU instead of VZ:**
+```sh
+colima delete -f
+colima start --cpu 4 --memory 8 --vm-type qemu
+```
+
+QEMU has more reliable networking but is slightly slower than VZ (Apple Virtualization Framework).
+
+**Check if Colima is running:**
+```sh
+colima status
+```
+
+### Backend "Empty reply from server"
+
+If `curl http://localhost:8020` connects but returns an empty reply, nginx might not be installed in the container. The workaround is already applied in `docker-compose.yml` — we connect directly to gunicorn on port 8010 via the host port 8020. Django admin CSS will be missing but the app is functional.
+
+### Frontend can't be reached
+
+Check if the port is actually published:
+```sh
+docker compose ps  # Look for 0.0.0.0:3000->3000 in PORTS column
+docker compose logs frontend --tail 20  # Should show "webpack compiled successfully"
+```
+
+If webpack compiled but you can't reach it, it's a Colima port forwarding issue (see above).
+
+### Connection refused on all ports
+
+Colima VM isn't running or port forwarding failed:
+```sh
+colima status  # Should show "running"
+colima stop && colima start --cpu 4 --memory 8 --network-address
 ```
 
 ## Where to go deeper
