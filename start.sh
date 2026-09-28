@@ -121,7 +121,7 @@ echo "tvs-stack: BE=$TVS_BE_PATH  FE=$TVS_FE_PATH"
 # applied, warns (but doesn't fail) if the patch won't apply cleanly.
 apply_minio_stash() {
   local stash_ref patch
-  stash_ref="$(git -C "$TVS_FE_PATH" stash list 2>/dev/null | grep -i minio | head -1 | cut -d: -f1)"
+  stash_ref="$(git -C "$TVS_FE_PATH" stash list 2>/dev/null | { grep -i minio || true; } | head -1 | cut -d: -f1)"
   if [[ -z "$stash_ref" ]]; then
     return 0
   fi
