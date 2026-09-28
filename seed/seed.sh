@@ -298,4 +298,68 @@ for adv in Advertiser.objects.filter(billing_account__isnull=True).select_relate
 print(f"valid billing on {Organization.objects.count()} orgs; linked {linked} advertisers")
 '
 
+# VERCM-2367 order-line picker: the campaign wizard's "Order Line" selector reads
+# GET /orders/order-lines/, which returns only lines whose OrderContract.status is
+# ACTIVE for the current advertiser. A fresh DB (and the Beeswax load, which doesn't
+# touch the orders app) has none, so the picker shows "No active order lines are
+# available for this advertiser." Seed one ACTIVE contract per product family and a
+# handful of lines under it for EVERY advertiser, so whichever one you demo with has
+# selectable CPM (Standard + Managed) and CPA (Managed + Boost) lines. Idempotent:
+# keyed by demo-prefixed sfdc_id / lineage_id, so re-running updates in place.
+echo "==> Seeding demo order lines (CPM + CPA) for all advertisers"
+run_be shell -c '
+from datetime import timedelta
+from django.utils import timezone
+from orders.models import OrderContract, OrderLine
+from tvsapi.models import Advertiser
+
+now = timezone.now()
+# (product_family, sku, start_offset_days, end_offset_days, budget). Non-overlapping
+# windows within a family so lines can be multi-selected without tripping the wizard
+# overlap guard; BOOST is exempt from that guard.
+LINE_SPECS = [
+    (OrderLine.ProductFamily.CPM, OrderLine.Sku.STANDARD, 0,   90,  "50000.00"),
+    (OrderLine.ProductFamily.CPM, OrderLine.Sku.MANAGED,  100, 190, "75000.00"),
+    (OrderLine.ProductFamily.CPA, OrderLine.Sku.MANAGED,  0,   90,  "60000.00"),
+    (OrderLine.ProductFamily.CPA, OrderLine.Sku.BOOST,    0,   90,  "10000.00"),
+]
+
+contracts_made = lines_made = 0
+for adv in Advertiser.objects.all():
+    aid = adv.pk
+    contracts = {}
+    for family in (OrderLine.ProductFamily.CPM, OrderLine.ProductFamily.CPA):
+        # sfdc_id is unique and capped at 18 chars — keep demo ids short.
+        contract, created = OrderContract.objects.update_or_create(
+            sfdc_id=f"DEMO{family}{aid:0>4}",
+            defaults=dict(
+                sfdc_opportunity_id=f"DEMOOPP{family}{aid:0>4}",
+                contract_number=f"{family}-CONTRACT-{aid}",
+                advertiser=adv,
+                status=OrderContract.Status.ACTIVE,
+                sfdc_modstamp=now,
+            ),
+        )
+        contracts[family] = contract
+        contracts_made += int(created)
+    for family, sku, start_off, end_off, budget in LINE_SPECS:
+        _, created = OrderLine.objects.update_or_create(
+            lineage_id=f"DEMO-{family}-{sku}-{aid}",
+            defaults=dict(
+                # family[-1] distinguishes CPM(M)/CPA(A); both start with C.
+                sfdc_id=f"D{family[-1]}{sku[:1]}{aid:0>5}",
+                contract=contracts[family],
+                advertiser=adv,
+                product_family=family,
+                sku=sku,
+                start_date=now + timedelta(days=start_off),
+                end_date=now + timedelta(days=end_off),
+                budget=budget,
+                sfdc_modstamp=now,
+            ),
+        )
+        lines_made += int(created)
+print(f"order lines: +{contracts_made} contracts, +{lines_made} lines across {Advertiser.objects.count()} advertisers")
+'
+
 echo "==> Seed complete."
