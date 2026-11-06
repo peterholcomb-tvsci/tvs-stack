@@ -49,6 +49,14 @@ Examples:
 EOF
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Load .env in this directory if present (paths/ports/etc).
+if [[ -f .env ]]; then
+  set -a; source .env; set +a
+fi
+
 # --- option parsing ---
 EXTRA_ARGS=()
 PROFILES=()
@@ -85,14 +93,6 @@ while [[ $# -gt 0 ]]; do
     *)              echo "Unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-# Load .env in this directory if present (paths/ports/etc).
-if [[ -f .env ]]; then
-  set -a; source .env; set +a
-fi
 
 # Resolve worktree paths — accept relative, normalize to absolute.
 : "${TVS_BE_PATH:=../tvs-be}"

@@ -103,7 +103,8 @@ services:
   # without real AWS creds. Console at http://localhost:9001 (tvslocal /
   # tvslocal123) to browse uploaded files.
   minio:
-    image: minio/minio
+    # Upstream MinIO images are no longer available; Silo maintains the compatible server and mc client.
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     command: server /data --address ":${MINIO_PORT:-9000}" --console-address ":9001"
     environment:
       MINIO_ROOT_USER: tvslocal
@@ -129,7 +130,7 @@ services:
   # tvs-telestream-us-west-2 mirrors the hardcoded TELESTREAM_S3_BUCKET so
   # QC-enabled advertisers can still upload (QC itself can't run locally).
   minio-init:
-    image: minio/mc
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     depends_on:
       minio:
         condition: service_healthy
