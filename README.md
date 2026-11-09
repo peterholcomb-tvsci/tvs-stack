@@ -110,6 +110,12 @@ no nginx, no collectstatic — note this leaves the Django admin unstyled):
 cp docker-compose.override.yml.example docker-compose.override.yml   # opt in
 ```
 
+The local object store uses the MinIO-compatible `pgsty/silo` image because
+the upstream MinIO container images are no longer available. Existing MinIO
+data stays in the same named volume. If an older local override sets `minio`
+or `minio-init` images to `quay.io/minio/*`, remove those entries so the
+checked-in image is used.
+
 ## Troubleshooting
 
 ### Colima port forwarding issues
