@@ -48,7 +48,9 @@ services:
     # image's build-time collectstatic, and we keep the generated assets in a
     # named volume (NOT the bind-mounted worktree) to leave the worktree pristine.
     working_dir: /opt/app
-    command: sh -c "python src/manage.py collectstatic --noinput && ./start-local-server.sh"
+    # sync-be-requirements.sh installs pins the mounted worktree adds after the
+    # image was built, so a new requirement does not force an image rebuild.
+    command: sh -c "sh /opt/stack/sync-be-requirements.sh && python src/manage.py collectstatic --noinput && ./start-local-server.sh"
     depends_on:
       redis:
         condition: service_started
@@ -67,6 +69,7 @@ services:
       # Hold collected static in a volume so nginx finds it at
       # /opt/app/src/static without writing into the bind-mounted worktree.
       - be-static:/opt/app/src/static
+      - ./scripts/sync-be-requirements.sh:/opt/stack/sync-be-requirements.sh:ro
 
   frontend:
     image: node:22-alpine3.21

@@ -16,7 +16,7 @@
 services:
   backend:
     working_dir: /opt/app/src
-    command: ["sh", "-c", "until python -c 'import socket; s=socket.create_connection((\"database\",3306),2); s.close()' 2>/dev/null; do sleep 2; done && python manage.py migrate --noinput && gunicorn tvs.wsgi --bind 0.0.0.0:8020 --workers 2 --timeout 300 --access-logfile - --error-logfile -"]
+    command: ["sh", "-c", "until python -c 'import socket; s=socket.create_connection((\"database\",3306),2); s.close()' 2>/dev/null; do sleep 2; done && sh /opt/stack/sync-be-requirements.sh && python manage.py migrate --noinput && gunicorn tvs.wsgi --bind 0.0.0.0:8020 --workers 2 --timeout 300 --access-logfile - --error-logfile -"]
     ports:
       - "${BACKEND_PORT:-8020}:8020"
   frontend:
