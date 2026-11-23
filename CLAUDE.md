@@ -301,6 +301,8 @@ Two modes worth knowing:
 - **Don't commit `.env`** — `.gitignore` covers it. Worktree-side `.env` files are also gitignored in their respective repos.
 - **Pre-commit on tvs-be** can fail if you `docker compose exec backend` and run git there — the container doesn't have the hook tooling.
 
+- **Running tvs-be tests: use `scripts/be-test.sh`.** `scripts/be-test.sh -b ../tvs-be-<branch> <labels...>` runs `manage.py test --noinput --keepdb` in the backend image against the stack's database, and installs `requirements-dev.txt` first (the image lacks test deps such as `freezegun`). Use `-b` to pick a worktree. Adding `-v <worktree>:/opt/app` to `docker compose run` does not work: compose still mounts `TVS_BE_PATH` there, so the tests come from the main checkout (symptom: `No module named 'tvs_vertical.tests...'` for a test file that exists in the worktree). Pass `--no-keepdb` to rebuild the test database.
+
 ## When something breaks
 
 - `./start.sh --logs backend` — first stop.
