@@ -9,12 +9,14 @@
 # `docker compose run` does not replace that mount.
 # Default flags are --noinput --keepdb. Pass --no-keepdb to rebuild the test DB.
 set -e
-cd "$(dirname "$0")/.."
-[ -f .env ] && . ./.env
+# Resolve -b before changing directory, so a relative path means the caller's.
 if [ "$1" = "-b" ]; then
-  TVS_BE_PATH=$(cd "$2" && pwd)
+  be_path=$(cd "$2" && pwd)
   shift 2
 fi
+cd "$(dirname "$0")/.."
+[ -f .env ] && . ./.env
+TVS_BE_PATH=${be_path:-$TVS_BE_PATH}
 [ $# -gt 0 ] || { echo "usage: $0 [-b <tvs-be checkout>] <test labels...>" >&2; exit 2; }
 export TVS_BE_PATH
 keepdb=--keepdb
